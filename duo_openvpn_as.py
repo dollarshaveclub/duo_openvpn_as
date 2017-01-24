@@ -592,12 +592,6 @@ class OpenVPNIntegration(Client):
 
         return result, status
 
-api = OpenVPNIntegration(IKEY, SKEY, HOST)
-if PROXY_HOST:
-    api.set_proxy(host=PROXY_HOST, port=PROXY_PORT)
-
-
-
 # regex to parse the first component of an LDAP group DN
 re_group = re.compile(r"^cn=([^,]+)")
 def ldap_groups_parse(res):
@@ -621,6 +615,10 @@ def ldap_group_mapping(info):
             ldap_groups = ldap_groups_find(ldap_groups, LDAP_OPENVPN_GROUP_PREFIX)
             group = ldap_groups.pop() if len(ldap_groups) > 0 else None
     return group
+
+api = OpenVPNIntegration(IKEY, SKEY, HOST)
+if PROXY_HOST:
+    api.set_proxy(host=PROXY_HOST, port=PROXY_PORT)
 
 def post_auth_cr(authcred, attributes, authret, info, crstate):
     # Don't do challenge/response on sessions or autologin clients.
