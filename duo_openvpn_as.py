@@ -21,15 +21,24 @@ PROXY_PORT = 8080
 # authentications (like web server access).
 SKIP_DUO_ON_VPN_AUTH = False
 
+# Prefx of LDAP Groups that are mapped to an OpenVPN group upon login
+# When an LDAP user logs in, the user's LDAP groups are inspected.
+# The first group found with the prefix specified is used
+# as the user's OpenVPN group. 
+LDAP_OPENVPN_GROUP_PREFIX = "vpn-role-"
+
 # ------------------------------------------------------------------
 
 import syslog
 import tempfile
 import traceback
+import ldap
+import re
 
 from pyovpn.plugin import (SUCCEED, FAIL)
 
 SYNCHRONOUS=False
+GROUP_SELECT = True
 
 API_RESULT_AUTH   = 'auth'
 API_RESULT_ALLOW  = 'allow'
@@ -587,6 +596,32 @@ api = OpenVPNIntegration(IKEY, SKEY, HOST)
 if PROXY_HOST:
     api.set_proxy(host=PROXY_HOST, port=PROXY_PORT)
 
+
+
+# regex to parse the first component of an LDAP group DN
+re_group = re.compile(r"^cn=([^,]+)")
+def ldap_groups_parse(res):
+    ret = set()
+    for g in res[0][1]['memberOf']:
+        m = re.match(re_group, g)
+        if m:
+            ret.add(m.groups()[0])
+    return ret
+
+def ldap_groups_find(groups, prefix):
+    return [k for k in groups if prefix in k]
+
+def ldap_group_mapping(info):
+    group = None
+    if info.get('auth_method') == 'ldap': 
+        user_dn = info['user_dn']
+        with info['ldap_context'] as l:
+            # get the LDAP group settings for this user
+            ldap_groups = ldap_groups_parse(l.search_ext_s(user_dn, ldap.SCOPE_SUBTREE, attrlist=["memberOf"]))
+            ldap_groups = ldap_groups_find(ldap_groups, LDAP_OPENVPN_GROUP_PREFIX)
+            group = ldap_groups.pop() if len(ldap_groups) > 0 else None
+    return group
+
 def post_auth_cr(authcred, attributes, authret, info, crstate):
     # Don't do challenge/response on sessions or autologin clients.
     # autologin client: a client that has been issued a special
@@ -611,6 +646,11 @@ def post_auth_cr(authcred, attributes, authret, info, crstate):
 
         # received response
         crstate.expire()
+
+        # set conn_group if present in state
+        if 'conn_group' in crstate:
+            authret.setdefault('proplist', {})['conn_group'] = crstate['conn_group']
+
         try:
             result, msg = api.auth(username, duo_pass, ipaddr)
             if result == API_RESULT_ALLOW:
@@ -633,6 +673,11 @@ def post_auth_cr(authcred, attributes, authret, info, crstate):
             if result == API_RESULT_AUTH:
                 # save state indicating challenge has been issued
                 crstate['challenge'] = True
+
+                conn_group = ldap_group_mapping(info)
+                if conn_group is not None:
+                    crstate['conn_group'] = conn_group
+
                 crstate.challenge_post_auth(authret, msg, echo=True)
             elif result == API_RESULT_ENROLL:
                 authret['status'] = FAIL
